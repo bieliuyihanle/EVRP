@@ -40,7 +40,13 @@ def load_problem_instance(file):
         tank_capacity = float(configuration_line.split('/')[1])  # q Vehicle fuel tank capacity
 
         configuration_line = f.readline()
-        now_energy = float(configuration_line.split('/')[1])  # e Vehicle now fuel tank capacity
+        energy_section = configuration_line.split('/')[1]
+        energy_tokens = energy_section.replace(',', ' ').split()
+        now_energy_values = [float(token) for token in energy_tokens]
+        if len(now_energy_values) == 1:
+            now_energy = now_energy_values[0]
+        else:
+            now_energy = now_energy_values
 
         configuration_line = f.readline()
         load_capacity = float(configuration_line.split('/')[1])  # C Vehicle load capacity

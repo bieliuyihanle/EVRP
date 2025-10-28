@@ -5,11 +5,25 @@ import numpy as np
 class RoutingProblemConfiguration:
     def __init__(self, tank_capacity, now_energy, payload_capacity, fuel_consumption_rate, charging_rate, velocity):
         self.tank_capacity = tank_capacity
-        self.now_energy = now_energy
+        if isinstance(now_energy, (list, tuple, np.ndarray)):
+            self.vehicle_initial_energies = [float(energy) for energy in now_energy]
+            self.now_energy = float(self.vehicle_initial_energies[0]) if self.vehicle_initial_energies else 0.0
+        else:
+            self.vehicle_initial_energies = None
+            self.now_energy = now_energy
         self.payload_capacity = payload_capacity
         self.fuel_consumption_rate = fuel_consumption_rate
         self.charging_rate = charging_rate
         self.velocity = velocity
+
+    def get_initial_energy(self, vehicle_index=None):
+        if self.vehicle_initial_energies is None:
+            return self.now_energy
+        if vehicle_index is None:
+            return self.vehicle_initial_energies[0] if self.vehicle_initial_energies else 0.0
+        if vehicle_index < len(self.vehicle_initial_energies):
+            return self.vehicle_initial_energies[vehicle_index]
+        return self.vehicle_initial_energies[-1]
 
 
 class RoutingProblemInstance:
@@ -58,19 +72,27 @@ class RoutingProblemInstance:
         for cs in self.charging_stations:
             self.vertices[cs.id] = cs
 
+    def get_initial_energy(self, vehicle_index=None):
+        return self.config.get_initial_energy(vehicle_index)
+
 
 class Route:
-    def __init__(self, config, depot):
+    def __init__(self, config, depot, vehicle_index=None, initial_energy=None):
         self.config = config
         self.route = [depot]
         self.depot = depot
-
+        self.vehicle_index = vehicle_index
+        if initial_energy is None:
+            self.initial_energy = self.config.get_initial_energy(vehicle_index)
+        else:
+            self.initial_energy = initial_energy
 
     def __getitem__(self, key):
         # 如果key是切片对象，返回一个新的Route实例对象
         if isinstance(key, slice):
             # 创建一个新的Route实例对象
-            sliced_route = Route(self.config, self.depot)
+            sliced_route = Route(self.config, self.depot, vehicle_index=self.vehicle_index,
+                                 initial_energy=self.initial_energy)
             # 将route列表进行切片，更新新实例的route属性
             sliced_route.route = self.route[key]
             return sliced_route
@@ -78,8 +100,9 @@ class Route:
         return self.route[key]
 
     @classmethod
-    def make_list_to_route(cls, problem_instance, node_list):
-        route_instance = cls(problem_instance.config, problem_instance.depot)
+    def make_list_to_route(cls, problem_instance, node_list, vehicle_index=None, initial_energy=None):
+        route_instance = cls(problem_instance.config, problem_instance.depot, vehicle_index=vehicle_index,
+                             initial_energy=initial_energy)
         route_instance.route = node_list  # 直接将传入的列表设置为路线，不再包含 depot
         return route_instance
 
@@ -100,7 +123,7 @@ class Route:
             return True
 
     def need_charge(self):
-        return self.config.now_energy - self.calculate_total_distance() * self.config.fuel_consumption_rate < 0.2 * self.config.tank_capacity
+        return self.initial_energy - self.calculate_total_distance() * self.config.fuel_consumption_rate < 0.2 * self.config.tank_capacity
 
     def is_feasible(self):
         if self.tw_constraint_violated():
@@ -135,7 +158,7 @@ class Route:
     def tank_capacity_constraint_violated(self):
         last = None
         tank_capacity = self.config.tank_capacity
-        now_energy = self.config.now_energy
+        now_energy = self.initial_energy
 
         for t in self.route:
             if last is not None:
@@ -189,7 +212,7 @@ class Route:
 
     def calculate_remaining_tank_capacity(self, until=None):
         last = None
-        now_energy = self. config.now_energy
+        now_energy = self.initial_energy
         total_consumption = 0
         for t in self.route:
             if last is not None:
@@ -206,6 +229,9 @@ class Route:
             last = t
             # print(total_consumption)
         return now_energy
+
+    def calculate_remaining_energy(self):
+        return self.calculate_remaining_tank_capacity()
 
     def calculate_arrival_times(self):
         # print(type(self.route))
@@ -382,7 +408,9 @@ class Route:
 
                 for j in reachable_stations:
                     temp_route = self[:i].generate_basic_route(j) + self[i:].route
-                    temp_route = Route.make_list_to_route(problem_instance, temp_route)
+                    temp_route = Route.make_list_to_route(problem_instance, temp_route,
+                                                         vehicle_index=self.vehicle_index,
+                                                         initial_energy=self.initial_energy)
                     # 判断插入后路径是否可行
                     if temp_route.is_feasible():
                         # 计算插入后的总成本
@@ -399,7 +427,9 @@ class Route:
         best_insertion_point, best_station, min_total_cost = self.find_optimal_charging_station_insertion(problem_instance)
         best_feasible_route = self[:best_insertion_point].generate_basic_route(best_station) + self[best_insertion_point:].route
         # print(best_feasible_route)
-        best_feasible_route1 = Route.make_list_to_route(problem_instance, best_feasible_route)
+        best_feasible_route1 = Route.make_list_to_route(problem_instance, best_feasible_route,
+                                                       vehicle_index=self.vehicle_index,
+                                                       initial_energy=self.initial_energy)
 
         if best_station is None:
             return None
@@ -478,6 +508,7 @@ class EVRPTWSolver:
         """
         self.construction_heuristic = construction_heuristic
         self.meta_heuristic = meta_heuristic
+        self.last_remaining_energy = []
 
     def solve(self, problem_instance):
         solution = self.construction_heuristic.solve(problem_instance)
@@ -489,12 +520,16 @@ class EVRPTWSolver:
         # print(solution)
         # solution.reverse()
         # print(solution)
+        self.last_remaining_energy = []
         for route in solution:
             # print(route)
             # print(type(route))
             # r = Route.make_list_to_route(problem_instance, route)
             # print(type(r))
             cost += route.calculate_total_cost()
+            if hasattr(route, "calculate_remaining_energy"):
+                remaining_energy = route.calculate_remaining_energy()
+                self.last_remaining_energy.append(remaining_energy)
         # print(solution)
         # print(type(solution))
         return cost, solution

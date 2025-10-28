@@ -1,12 +1,19 @@
 import functools
 import timeit
+from copy import deepcopy
 import numpy as np
 import matplotlib.pyplot as plt
 from os import listdir
 import pandas as pd
+from typing import List
 
-
-from evrptw_meta import VariableNeighbourhoodSearch, SimulatedAnnealing1, Adaptive, FCFS
+from evrptw_meta import (
+    VariableNeighbourhoodSearch,
+    SimulatedAnnealing1,
+    Adaptive,
+    FCFS,
+    calculate_route_remaining_energy,
+)
 from evrptw_solver import EVRPTWSolver
 from evrptw_utilities import load_problem_instance, load_solution, write_solution_to_file, write_solution_stats_to_file, \
     write_meta_heuristic_result_statistic_to_file
@@ -74,6 +81,8 @@ def main():
             print('generate routes...')
             duration = timeit.timeit(functools.partial(solver.solve, problem_instance), number=1) * 1000
             cost, solution = solver.solve(problem_instance)
+            for idx, energy in enumerate(solver.last_remaining_energy):
+                print(f"Initial solution vehicle {idx} remaining energy: {energy:.3f}")
             test_case_statistics.append((file, cost, duration))
             print('write results to file ...')
             write_solution_to_file("_problem_solutions/solution_{0}".format(file), cost, solution)
@@ -129,6 +138,16 @@ def main():
                         meta_heuristic = meta_heuristic_class(problem_instance, **params)
 
                     new_cost, new_solution, costs, times = meta_heuristic.improve_solution()
+
+                    if new_solution is not None:
+                        print(f"{meta_name} best solution cost for {file}: {new_cost:.3f}")
+                        # print(new_solution)
+                        energies: List[float] = []
+                        for idx, route in enumerate(new_solution):
+                            remaining_energy = calculate_route_remaining_energy(problem_instance, route, idx)
+                            energies.append(float(remaining_energy))
+                        # print(f"{meta_name} best solution remaining energy: ")
+                        # print(energies)
 
                     # 记录运行时间
                     duration = timeit.timeit(functools.partial(meta_heuristic.improve_solution), number=1)

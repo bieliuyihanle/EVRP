@@ -22,6 +22,29 @@ K_MAX = 4
 NO_IMPROVEMENT_TOLERANCE = 1
 
 
+def calculate_route_remaining_energy(problem_instance: RoutingProblemInstance, route, vehicle_index: int) -> float:
+    """Return the remaining energy of a route using the vehicle-specific initial energy."""
+
+    if not route:
+        return problem_instance.config.get_initial_energy(vehicle_index)
+
+    current_energy = problem_instance.config.get_initial_energy(vehicle_index)
+    last_position = problem_instance.depot
+    # print(current_energy)
+
+    for vertex_id in route[1:]:
+        target = problem_instance.vertices[vertex_id]
+        distance = last_position.distance_to(target)
+        current_energy -= distance * problem_instance.config.fuel_consumption_rate
+        # print(current_energy)
+        if isinstance(target, CharingStation):
+            current_energy = problem_instance.config.tank_capacity
+
+        last_position = target
+
+    return current_energy
+
+
 # neighbourhoods
 def two_opt_star(state, cost, remove_operator, nc_feasible_operator, state_feasibility_operator, route_cost_operator, need_operator,
                  insert_station_operation,process_state, min_cost=sys.maxsize):
@@ -260,13 +283,17 @@ class Adaptive:
         self.problem_instance = problem_instance
         self.state = state
         self.cost = 0
-        for r in self.state:
+        for idx, r in enumerate(self.state):
+            self.problem_instance.config.now_energy = self.problem_instance.config.get_initial_energy(idx)
             self.cost += self.calculate_route_cost(r)
         self.unassigned = unassigned if unassigned is not None else []
         self.customers_id = []
         for k in self.problem_instance.customers:
             self.customers_id.append(k.id)
         self.fig_name = fig_name
+
+    def _set_vehicle_energy(self, vehicle_index: int) -> None:
+        self.problem_instance.config.now_energy = self.problem_instance.config.get_initial_energy(vehicle_index)
 
     def init_way(self, problem_instance: RoutingProblemInstance, routes, cost, unassigned=None):
         return Adaptive(self.problem_instance, self.state, self.cost, self.unassigned)
@@ -402,6 +429,14 @@ class Adaptive:
 
         solution = result.best_state
         objective = solution.objective()
+
+        # remaining_energies = [
+        #     calculate_route_remaining_energy(self.problem_instance, route, idx)
+        #     for idx, route in enumerate(solution.state)
+        # ]
+        #
+        # print(f"Adaptive best solution  remaining energy: {remaining_energies:.3f}")
+        # print(remaining_energies)
 
         # 从 result.statistics 中提取收敛数据
         statistics = result.statistics
@@ -1213,9 +1248,10 @@ class Adaptive:
         unvisited_customers = []
 
         for idx, value in enumerate(state.state):
-
+            self._set_vehicle_energy(idx)
             # 判断当前路径是否需要充电
             while self.need_charge(state.state[idx]):
+                self._set_vehicle_energy(idx)
 
                 k = self.make_route_feasible_and_best(value)
                 # if k == ['D0','S2', 'C6', 'C1', 'D0']:
@@ -1281,17 +1317,21 @@ class Adaptive:
             new_routes = self.innh(depot, unvisited_customers, self.problem_instance)
             # print(new_routes)
             # 对新的路径进行充电站插入操作
-            for idx, value in enumerate(new_routes):
+            start_index = len(state.state)
+            for offset, value in enumerate(new_routes):
+                vehicle_index = start_index + offset
+                self._set_vehicle_energy(vehicle_index)
                 # print(value)
                 # print(self.need_charge(value))
                 while self.need_charge(value):
+                    self._set_vehicle_energy(vehicle_index)
                     k = self.make_route_feasible_and_best(value)
                     if k is not None:
-                        new_routes[idx] = k
+                        new_routes[offset] = k
                         break
                     else:
-                        earliest_customer = self.find_earliest_customer(new_routes[idx])
-                        new_routes[idx].remove(earliest_customer)
+                        earliest_customer = self.find_earliest_customer(new_routes[offset])
+                        new_routes[offset].remove(earliest_customer)
                         unvisited_customers.append(self.problem_instance.vertices[earliest_customer])
 
             # 展开 new_routes，将其转化为单个客户的列表
@@ -1574,7 +1614,8 @@ class Adaptive:
 
     def calculate_total_cost(self, state):
         total_cost = 0
-        for r in state:
+        for idx, r in enumerate(state):
+            self._set_vehicle_energy(idx)
             total_cost += self.calculate_route_cost(r)
         return total_cost
 
@@ -1735,10 +1776,9 @@ class Adaptive:
         return True
 
     def state_feasible(self, state):
-        for route in state:
-            if self.is_feasible(route):
-                continue
-            else:
+        for idx, route in enumerate(state):
+            self._set_vehicle_energy(idx)
+            if not self.is_feasible(route):
                 return False
         return True
 
@@ -1747,12 +1787,23 @@ class FCFS:
     def __init__(self,problem_instance: RoutingProblemInstance):
         self.problem_instance = problem_instance
 
+    def _set_vehicle_energy(self, vehicle_index: int) -> None:
+        self.problem_instance.config.now_energy = self.problem_instance.config.get_initial_energy(vehicle_index)
+
     def improve_solution(self):
         cost = 0
         temp_solution = self.fcfs()
         solution = self.process_route(temp_solution)
-        for route in solution:
+        for idx, route in enumerate(solution):
+            self._set_vehicle_energy(idx)
             cost += self.calculate_route_cost(route)
+
+        # remaining_energies = [
+        #     calculate_route_remaining_energy(self.problem_instance, route, idx)
+        #     for idx, route in enumerate(solution)
+        # ]
+        # for idx, energy in enumerate(remaining_energies):
+        #     print(f"FCFS best solution vehicle {idx} remaining energy: {energy:.3f}")
 
         costs = cost
         times = cost
@@ -1799,8 +1850,11 @@ class FCFS:
 
         for idx, value in enumerate(state):
 
+            self._set_vehicle_energy(idx)
+
             # 判断当前路径是否需要充电
             while self.need_charge(state[idx]):
+                self._set_vehicle_energy(idx)
 
                 k = self.make_route_feasible_and_best(value)
                 # if k == ['D0','S2', 'C6', 'C1', 'D0']:
@@ -1866,17 +1920,21 @@ class FCFS:
             new_routes = self.innh(depot, unvisited_customers, self.problem_instance)
             # print(new_routes)
             # 对新的路径进行充电站插入操作
-            for idx, value in enumerate(new_routes):
+            start_index = len(state)
+            for offset, value in enumerate(new_routes):
+                vehicle_index = start_index + offset
+                self._set_vehicle_energy(vehicle_index)
                 # print(value)
                 # print(self.need_charge(value))
                 while self.need_charge(value):
+                    self._set_vehicle_energy(vehicle_index)
                     k = self.make_route_feasible_and_best(value)
                     if k is not None:
-                        new_routes[idx] = k
+                        new_routes[offset] = k
                         break
                     else:
-                        earliest_customer = self.find_earliest_customer(new_routes[idx])
-                        new_routes[idx].remove(earliest_customer)
+                        earliest_customer = self.find_earliest_customer(new_routes[offset])
+                        new_routes[offset].remove(earliest_customer)
                         unvisited_customers.append(self.problem_instance.vertices[earliest_customer])
 
             # 展开 new_routes，将其转化为单个客户的列表
@@ -2159,7 +2217,8 @@ class FCFS:
 
     def calculate_total_cost(self, state):
         total_cost = 0
-        for r in state:
+        for idx, r in enumerate(state):
+            self._set_vehicle_energy(idx)
             total_cost += self.calculate_route_cost(r)
         return total_cost
 
@@ -2317,7 +2376,8 @@ class SimulatedAnnealing1:
         self.problem_instance = problem_instance
         self.state = state
         self.cost = 0
-        for r in self.state:
+        for idx, r in enumerate(self.state):
+            self.problem_instance.config.now_energy = self.problem_instance.config.get_initial_energy(idx)
             self.cost += self.calculate_route_cost(r)
         self.t_0 = t_0
         self.temp = t_0
@@ -2327,6 +2387,15 @@ class SimulatedAnnealing1:
         self.fig_name = fig_name
         self.neighbour_hoods = [merge_route, two_opt, two_opt_star, or_opt, cross_exchange]
 
+    def _set_vehicle_energy(self, vehicle_index: int) -> None:
+        self.problem_instance.config.now_energy = self.problem_instance.config.get_initial_energy(vehicle_index)
+
+    def _sum_route_costs(self, routes):
+        total = 0
+        for idx, route in enumerate(routes):
+            self._set_vehicle_energy(idx)
+            total += self.calculate_route_cost(route)
+        return total
     def calculate_example(self, state):
         if self.state_feasible(state):
             print("feasible")
@@ -2431,6 +2500,13 @@ class SimulatedAnnealing1:
 
         state_approx, cost_approx = self.local_search(state_approx, cost_approx)
 
+        # remaining_energies = [
+        #     calculate_route_remaining_energy(self.problem_instance, route, idx)
+        #     for idx, route in enumerate(state_approx)
+        # ]
+        # for idx, energy in enumerate(remaining_energies):
+        #     print(f"SimulatedAnnealing1 best solution vehicle {idx} remaining energy: {energy:.3f}")
+
         return cost_approx, state_approx, statistic, iteration_times
 
     # 迭代次数为终止条件
@@ -2490,10 +2566,9 @@ class SimulatedAnnealing1:
         return True
 
     def state_feasible(self, state):
-        for route in state:
-            if self.is_feasible(route):
-                continue
-            else:
+        for idx, route in enumerate(state):
+            self._set_vehicle_energy(idx)
+            if not self.is_feasible(route):
                 return False
         return True
 
@@ -2563,9 +2638,11 @@ class SimulatedAnnealing1:
         unvisited_customers = []
 
         for idx, value in enumerate(state):
+            self._set_vehicle_energy(idx)
 
             # 判断当前路径是否需要充电
             while self.need_charge(state[idx]):
+                self._set_vehicle_energy(idx)
 
                 k = self.make_route_feasible_and_best(value)
                 # if k == ['D0','S2', 'C6', 'C1', 'D0']:
@@ -2631,17 +2708,22 @@ class SimulatedAnnealing1:
             new_routes = self.innh(depot, unvisited_customers, self.problem_instance)
             # print(new_routes)
             # 对新的路径进行充电站插入操作
-            for idx, value in enumerate(new_routes):
+            start_index = len(state)
+            for offset, value in enumerate(new_routes):
+                vehicle_index = start_index + offset
+                self._set_vehicle_energy(vehicle_index)
                 # print(value)
                 # print(self.need_charge(value))
                 while self.need_charge(value):
+                    self._set_vehicle_energy(vehicle_index)
+
                     k = self.make_route_feasible_and_best(value)
                     if k is not None:
-                        new_routes[idx] = k
+                        new_routes[offset] = k
                         break
                     else:
-                        earliest_customer = self.find_earliest_customer(new_routes[idx])
-                        new_routes[idx].remove(earliest_customer)
+                        earliest_customer = self.find_earliest_customer(new_routes[offset])
+                        new_routes[offset].remove(earliest_customer)
                         unvisited_customers.append(self.problem_instance.vertices[earliest_customer])
 
             # 展开 new_routes，将其转化为单个客户的列表
@@ -2923,10 +3005,7 @@ class SimulatedAnnealing1:
         return dist
 
     def calculate_total_cost(self, state):
-        total_cost = 0
-        for r in state:
-            total_cost += self.calculate_route_cost(r)
-        return total_cost
+        return self._sum_route_costs(state)
 
     def calculate_nc_route_cost(self, route):
         dist_cost = self.calculate_route_distance(route)
@@ -3091,6 +3170,16 @@ class VariableNeighbourhoodSearch:
         self.solution = solution
         self.cost = cost
 
+    def _set_vehicle_energy(self, vehicle_index: int) -> None:
+        self.problem_instance.config.now_energy = self.problem_instance.config.get_initial_energy(vehicle_index)
+
+    def _sum_route_costs(self, routes):
+        total = 0
+        for idx, route in enumerate(routes):
+            self._set_vehicle_energy(idx)
+            total += self.calculate_route_cost(route)
+        return total
+
     # 终止条件为最大运行时间：10s
     def improve_solution(self):
         best_cost = self.cost
@@ -3100,7 +3189,8 @@ class VariableNeighbourhoodSearch:
 
         route_cost_cache = 0
 
-        for r in self.solution:
+        for idx, r in enumerate(self.solution):
+            self._set_vehicle_energy(idx)
             route_cost_cache += self.calculate_route_cost(r)
 
         statistic = []
@@ -3147,6 +3237,13 @@ class VariableNeighbourhoodSearch:
                             k = 0
                         else:
                             break  # 如果达到10秒，则停止算法
+        # remaining_energies = [
+        #     calculate_route_remaining_energy(self.problem_instance, route, idx)
+        #     for idx, route in enumerate(best_solution)
+        # ]
+        # for idx, energy in enumerate(remaining_energies):
+        #     print(f"VariableNeighbourhoodSearch best solution vehicle {idx} remaining energy: {energy:.3f}")
+
         return best_cost, best_solution, statistic, iteration_times
 
     # # 终止条件为多次迭代解未没有变好
@@ -3222,7 +3319,7 @@ class VariableNeighbourhoodSearch:
                     if type(from_v) is Customer and type(to_v) is Customer:
                         route[from_idx], route[to_idx] = route[to_idx], route[from_idx]
                         if self.is_nc_feasible(route):
-                            new_route_cost_cache = 0
+
                             temp_solution = deepcopy(pre_solution)
                             temp_solution.remove(pre_solution[route_idx])
                             temp_solution.append(route)
@@ -3241,8 +3338,7 @@ class VariableNeighbourhoodSearch:
                             #         temp_solution[idx] = k
 
                             if self.state_feasible(temp_solution):
-                                for k in temp_solution:
-                                    new_route_cost_cache += self.calculate_route_cost(k)
+                                new_route_cost_cache = self._sum_route_costs(temp_solution)
                                 return temp_solution, new_route_cost_cache
                         else:
                             route[from_idx], route[to_idx] = route[to_idx], route[from_idx]
@@ -3270,7 +3366,7 @@ class VariableNeighbourhoodSearch:
                         part_3 = route[cp[1]:]
                         new_route = part_1 + part_2 + part_3
                         if self.is_nc_feasible(new_route):
-                            new_route_cost_cache = 0
+
                             new_solution = deepcopy(pre_solution)
                             new_solution.remove(route)
                             new_solution.append(new_route)
@@ -3284,9 +3380,7 @@ class VariableNeighbourhoodSearch:
                             #         new_solution[idx] = k
 
                             if self.state_feasible(new_solution):
-                                for k in new_solution:
-                                    new_route_cost_cache += self.calculate_route_cost(k)
-
+                                new_route_cost_cache = self._sum_route_costs(new_solution)
                                 return new_solution, new_route_cost_cache
 
         # N_2 -> Moving a customer to another route
@@ -3328,11 +3422,10 @@ class VariableNeighbourhoodSearch:
                                 #         new_solution[idx] = k
 
                                 if self.state_feasible(new_solution):
-                                    for k in new_solution:
-                                        new_route_cost_cache += self.calculate_route_cost(k)
+                                    new_route_cost_cache = self._sum_route_costs(new_solution)
                                     return new_solution, new_route_cost_cache
                             else:
-                                new_route_cost_cache = 0
+
                                 new_solution = pre_solution[:combination[1]]
                                 new_solution += [from_route]
                                 new_solution += pre_solution[combination[1] + 1:combination[0]]
@@ -3347,9 +3440,7 @@ class VariableNeighbourhoodSearch:
                                 #             break
                                 #         new_solution[idx] = k
                                 if self.state_feasible(new_solution):
-                                    for k in new_solution:
-                                        new_route_cost_cache += self.calculate_route_cost(k)
-
+                                    new_route_cost_cache = self._sum_route_costs(new_solution)
                                     return new_solution, new_route_cost_cache
                         else:
                             from_route[tp[0]], to_route[tp[1]] = to_route[tp[1]], from_route[tp[0]]
@@ -3375,7 +3466,7 @@ class VariableNeighbourhoodSearch:
                     new_route = to_route[:-1] + from_route[1:]
 
                 if new_route is not None:
-                    new_route_cost_cache = 0
+
                     new_solution = pre_solution[:combination[0]]
                     new_solution += [new_route]
                     new_solution += pre_solution[combination[0] + 1:combination[1]]
@@ -3383,8 +3474,7 @@ class VariableNeighbourhoodSearch:
 
                     new_solution = self.process_route(new_solution)
                     if self.state_feasible(new_solution):
-                        for k in new_solution:
-                            new_route_cost_cache += self.calculate_route_cost(k)
+                        new_route_cost_cache = self._sum_route_costs(new_solution)
                         return new_solution, new_route_cost_cache
                 else:
                     continue
@@ -3437,8 +3527,7 @@ class VariableNeighbourhoodSearch:
 
                         temp_solution = self.process_route(temp_solution)
                         if self.state_feasible(temp_solution):
-                            for k in temp_solution:
-                                temp_route_cost_cache += self.calculate_route_cost(k)
+                            temp_route_cost_cache = self._sum_route_costs(temp_solution)
 
                             return temp_solution, temp_route_cost_cache
 
@@ -3547,7 +3636,7 @@ class VariableNeighbourhoodSearch:
                         # print(best_solution)
                         # print(route)
                         if self.is_nc_feasible(route):
-                            new_route_cost_cache = 0
+
                             temp_solution = deepcopy(best_solution)
                             temp_solution[route_idx] = route
 
@@ -3561,8 +3650,7 @@ class VariableNeighbourhoodSearch:
 
                             # print(best_solution)
                             if self.state_feasible(temp_solution):
-                                for k in temp_solution:
-                                    new_route_cost_cache += self.calculate_route_cost(k)
+                                new_route_cost_cache = self._sum_route_costs(temp_solution)
                                 if new_route_cost_cache < route_cost_cache:
                                     return temp_solution, new_route_cost_cache
                         else:
@@ -3592,7 +3680,7 @@ class VariableNeighbourhoodSearch:
                     "hallo"
                     # print(new_route)
                     if self.is_nc_feasible(part_1 + part_2 + part_3):
-                        new_route_cost_cache = 0
+
                         new_solution = deepcopy(best_solution)
                         new_solution.remove(route)
                         new_solution.append(new_route)
@@ -3605,8 +3693,7 @@ class VariableNeighbourhoodSearch:
                         #         new_solution[idx] = k
 
                         if self.state_feasible(new_solution):
-                            for k in new_solution:
-                                new_route_cost_cache += self.calculate_route_cost(k)
+                            new_route_cost_cache = self._sum_route_costs(new_solution)
                             if new_route_cost_cache < route_cost_cache:
                                 return new_solution, new_route_cost_cache
 
@@ -3637,7 +3724,7 @@ class VariableNeighbourhoodSearch:
                     from_route[tp[0]], to_route[tp[1]] = to_route[tp[1]], from_route[tp[0]]
                     if self.is_nc_feasible(from_route) and self.is_nc_feasible(to_route):
                         if combination[0] < combination[1]:
-                            new_route_cost_cache = 0
+
                             new_solution = deepcopy(best_solution)
                             new_solution.remove(best_solution[combination[0]])
                             new_solution.remove(best_solution[combination[1]])
@@ -3653,8 +3740,7 @@ class VariableNeighbourhoodSearch:
                                     new_solution[idx] = k
 
                                 if self.state_feasible(new_solution):
-                                    for k in new_solution:
-                                        new_route_cost_cache += self.calculate_route_cost(k)
+                                    new_route_cost_cache = self._sum_route_costs(new_solution)
                                     if new_route_cost_cache < route_cost_cache:
                                         return new_solution, new_route_cost_cache
 
@@ -3681,7 +3767,7 @@ class VariableNeighbourhoodSearch:
                 new_route = to_route[:-1] + from_route[1:]
 
             if new_route:
-                new_route_cost_cache = 0
+
                 new_solution = deepcopy(pre_solution)
                 new_solution.remove(from_route)
                 new_solution.remove(to_route)
@@ -3690,8 +3776,7 @@ class VariableNeighbourhoodSearch:
                 new_solution = self.process_route(new_solution)
 
                 if self.state_feasible(new_solution):
-                    for k in new_solution:
-                        new_route_cost_cache += self.calculate_route_cost(k)
+                    new_route_cost_cache = self._sum_route_costs(new_solution)
                     if new_route_cost_cache < route_cost_cache:
                         return new_solution, new_route_cost_cache
 
@@ -3734,7 +3819,7 @@ class VariableNeighbourhoodSearch:
                 new_route_2 = route_2[:split_index_2] + route_1[split_index_1:]
 
                 if self.is_nc_feasible(new_route_1) and self.is_nc_feasible(new_route_2):
-                    new_route_cost_cache = 0
+
                     new_solution = deepcopy(pre_solution)
                     new_solution.remove(pre_solution[combination[0]])
                     new_solution.remove(pre_solution[combination[1]])
@@ -3742,8 +3827,7 @@ class VariableNeighbourhoodSearch:
                     new_solution.append(new_route_2)
                     new_solution = self.process_route(new_solution)
                     if self.state_feasible(new_solution):
-                        for k in new_solution:
-                            new_route_cost_cache += self.calculate_route_cost(k)
+                        new_route_cost_cache = self._sum_route_costs(new_solution)
                         if new_route_cost_cache < route_cost_cache:
                             return new_solution, new_route_cost_cache
         return solution, route_cost_cache
@@ -3767,9 +3851,11 @@ class VariableNeighbourhoodSearch:
         unvisited_customers = []
 
         for idx, value in enumerate(state):
+            self._set_vehicle_energy(idx)
 
             # 判断当前路径是否需要充电
             while self.need_charge(state[idx]):
+                self._set_vehicle_energy(idx)
 
                 k = self.make_route_feasible_and_best(value)
                 # if k == ['D0','S2', 'C6', 'C1', 'D0']:
@@ -3835,17 +3921,21 @@ class VariableNeighbourhoodSearch:
             new_routes = self.innh(depot, unvisited_customers, self.problem_instance)
             # print(new_routes)
             # 对新的路径进行充电站插入操作
-            for idx, value in enumerate(new_routes):
+            start_index = len(state)
+            for offset, value in enumerate(new_routes):
+                vehicle_index = start_index + offset
+                self._set_vehicle_energy(vehicle_index)
                 # print(value)
                 # print(self.need_charge(value))
                 while self.need_charge(value):
+                    self._set_vehicle_energy(vehicle_index)
                     k = self.make_route_feasible_and_best(value)
                     if k is not None:
-                        new_routes[idx] = k
+                        new_routes[offset] = k
                         break
                     else:
-                        earliest_customer = self.find_earliest_customer(new_routes[idx])
-                        new_routes[idx].remove(earliest_customer)
+                        earliest_customer = self.find_earliest_customer(new_routes[offset])
+                        new_routes[offset].remove(earliest_customer)
                         unvisited_customers.append(self.problem_instance.vertices[earliest_customer])
 
             # 展开 new_routes，将其转化为单个客户的列表
@@ -4289,9 +4379,8 @@ class VariableNeighbourhoodSearch:
         return True
 
     def state_feasible(self, state):
-        for route in state:
-            if self.is_feasible(route):
-                continue
-            else:
+        for idx, route in enumerate(state):
+            self._set_vehicle_energy(idx)
+            if not self.is_feasible(route):
                 return False
         return True
