@@ -24,13 +24,14 @@ def k_nearest_neighbor_min_ready_time(depot, customers, k=3):
 
     return giant_route
 
-def k_nearest_neighbor_min_due_date(depot, customers,problem_instance, k=3):
+def k_nearest_neighbor_min_due_date(depot, customers,problem_instance, k=3, start_vehicle_index=0):
 
     giant_route = []
     serviced_customers = set()
 
     while customers:
-        route = Route(problem_instance.config, problem_instance.depot)
+        route_index = start_vehicle_index + len(giant_route)
+        route = Route(problem_instance.config, problem_instance.depot, vehicle_index=route_index)
         last_position = depot
 
         while customers:
@@ -76,7 +77,8 @@ def nearest_neighbor_tolerance_min_due_date(problem_instance, depot, customers, 
     # number = sum(len(sublist) for sublist in giant_route)
     number = 0
     while len(customers) != number:
-        route = Route(problem_instance.config, problem_instance.depot)
+        route_index = len(giant_route)
+        route = Route(problem_instance.config, problem_instance.depot, vehicle_index=route_index)
         last_position = depot
 
         while len(customers) != number:
@@ -141,6 +143,8 @@ def process_route(depot, solution, problem_instance):
     unvisited_customers = []
 
     for idx, value in enumerate(solution):
+        value.vehicle_index = idx
+        value.initial_energy = value.config.get_initial_energy(idx)
 
         # 判断当前路径是否需要充电
         while solution[idx].need_charge():
@@ -163,10 +167,15 @@ def process_route(depot, solution, problem_instance):
 
         # 使用k-最近邻域启发式为未访问的客户生成新的路径
         depot = depot
-        new_routes = k_nearest_neighbor_min_due_date(depot, unvisited_customers, problem_instance)
+        start_index = len(solution)
+        new_routes = k_nearest_neighbor_min_due_date(
+            depot, unvisited_customers, problem_instance, start_vehicle_index=start_index)
         # print(new_routes)
         # 对新的路径进行充电站插入操作
         for idx, value in enumerate(new_routes):
+            vehicle_index = start_index + idx
+            value.vehicle_index = vehicle_index
+            value.initial_energy = value.config.get_initial_energy(vehicle_index)
             # print(value)
             # print(self.need_charge(value))
             while value.need_charge():
