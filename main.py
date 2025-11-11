@@ -1,11 +1,13 @@
+import csv
 import functools
+import os
 import timeit
-from copy import deepcopy
-import numpy as np
-import matplotlib.pyplot as plt
-from os import listdir
-import pandas as pd
 from typing import List
+
+# matplotlib used for optional plotting later in the file
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
 from evrptw_meta import (
     VariableNeighbourhoodSearch,
@@ -13,10 +15,17 @@ from evrptw_meta import (
     Adaptive,
     FCFS,
     calculate_route_remaining_energy,
+    calculate_route_remaining_energy1
 )
-from evrptw_solver import EVRPTWSolver
-from evrptw_utilities import load_problem_instance, load_solution, write_solution_to_file, write_solution_stats_to_file, \
-    write_meta_heuristic_result_statistic_to_file
+
+from evrptw_solver import EVRPTWSolver, RoutingProblemInstance
+from evrptw_utilities import (
+    load_multi_period_problem_instance,
+    load_solution,
+    write_solution_to_file,
+    write_solution_stats_to_file,
+    write_meta_heuristic_result_statistic_to_file,
+)
 from heuristics.construction.beasley_heuristic import BeasleyHeuristic, process_route,  k_nearest_neighbor_min_due_date, \
     k_nearest_neighbor_min_ready_time, nearest_neighbor_tolerance_min_due_date, \
     nearest_neighbor_tolerance_min_ready_time
@@ -25,6 +34,12 @@ RESULT_STATISTICS_FILENAME = 'ex1_result_1126205.csv'
 RESULT_STATISTICS_LATEX_TABLE = 'ex1_result_1126205.tex'
 
 MAX_ITERATIONS = 10
+
+
+def _format_remaining_energy(values):
+    if not values:
+        return ""
+    return "|".join(f"{float(value):.6f}" for value in values)
 
 
 def main():
@@ -36,23 +51,23 @@ def main():
     best_param = 3
 
     meta_heuristics_params = {
-        'FCFS': {
-            'class': FCFS,
-            'params': lambda problem_instance, solution, cost, file, i: {}
-        },
-        'SimulatedAnnealing1': {
-            'class': SimulatedAnnealing1,
-            'params': lambda problem_instance, solution, cost, file, i: (
-                solution, cost, 400, 0.9, '{0}_{1}'.format(file, i)
-            )
-        },
-        'VariableNeighbourhoodSearch': {
-            'class': VariableNeighbourhoodSearch,
-            'params': lambda problem_instance, solution, cost, file, i: {
-                'solution': solution,
-                'cost': cost
-            }
-        },
+        # 'FCFS': {
+        #     'class': FCFS,
+        #     'params': lambda problem_instance, solution, cost, file, i: {}
+        # },
+        # 'SimulatedAnnealing1': {
+        #     'class': SimulatedAnnealing1,
+        #     'params': lambda problem_instance, solution, cost, file, i: (
+        #         solution, cost, 400, 0.9, '{0}_{1}'.format(file, i)
+        #     )
+        # },
+        # 'VariableNeighbourhoodSearch': {
+        #     'class': VariableNeighbourhoodSearch,
+        #     'params': lambda problem_instance, solution, cost, file, i: {
+        #         'solution': solution,
+        #         'cost': cost
+        #     }
+        # },
         'Adaptive': {
             'class': Adaptive,
             'params': lambda problem_instance, solution, cost, file, i: (
@@ -73,19 +88,41 @@ def main():
     construction_heuristic = BeasleyHeuristic(process_route, best_heuristic, [best_param])
     test_case_statistics = []
     solver = EVRPTWSolver(construction_heuristic)
-    for file in listdir('_problem_instances/exercise_instances/'):
+    for file in os.listdir('_problem_instances/exercise_instances/'):
         if file.endswith('.txt'):
             print('process file {0}'.format(file))
             print('load problem instance...')
-            problem_instance = load_problem_instance('_problem_instances/exercise_instances/' + file)
+            instance_file = os.path.join('_problem_instances/exercise_instances/', file)
+            multi_problem = load_multi_period_problem_instance(instance_file)
+
             print('generate routes...')
-            duration = timeit.timeit(functools.partial(solver.solve, problem_instance), number=1) * 1000
-            cost, solution = solver.solve(problem_instance)
-            for idx, energy in enumerate(solver.last_remaining_energy):
-                print(f"Initial solution vehicle {idx} remaining energy: {energy:.3f}")
-            test_case_statistics.append((file, cost, duration))
-            print('write results to file ...')
-            write_solution_to_file("_problem_solutions/solution_{0}".format(file), cost, solution)
+            start_time = timeit.default_timer()
+            multi_solution = solver.solve_multi_period(multi_problem)
+            duration = (timeit.default_timer() - start_time) * 1000
+
+            base_name, _ = os.path.splitext(file)
+            total_cost = multi_solution.total_cost
+
+            for period_index, period_solution in enumerate(multi_solution.periods):
+                print(
+                    f"Period {period_index + 1} ({period_solution.name}) cost: {period_solution.cost:.3f}"
+                )
+                for idx, energy in enumerate(period_solution.remaining_energy):
+                    print(
+                        f"  Initial solution vehicle {idx} remaining energy after period: {energy:.3f}"
+                    )
+
+                if len(multi_solution.periods) == 1:
+                    output_path = "_problem_solutions/solution_{0}".format(file)
+                else:
+                    output_path = "_problem_solutions/solution_{0}_period_{1}.txt".format(
+                        base_name, period_index + 1
+                    )
+
+                print(f'write results to file {output_path} ...')
+                write_solution_to_file(output_path, period_solution.cost, period_solution.routes)
+
+            test_case_statistics.append((file, total_cost, duration))
             print()
 
             test_case_statistics.sort(key=lambda x: x[0])
@@ -105,93 +142,230 @@ def main():
     all_results = []
     convergence_records = []  # 用于保存所有运行的详细收敛数据
     all_convergence_runs = []
+    raw_records = []
+    total_cost_records = []
+    summary_records = []
 
-    for file in listdir('_problem_instances/exercise_instances/'):
-        if file.endswith('.txt'):
-            print("process file {0}".format(file))
-            problem_instance = load_problem_instance('_problem_instances/exercise_instances/' + file)
-            cost, solution = load_solution('_problem_solutions/solution_{0}'.format(file))
+    for file in os.listdir('_problem_instances/exercise_instances/'):
+        if not file.endswith('.txt'):
+            continue
 
-            print('start to improve the routes...')
+        print("process file {0}".format(file))
+        instance_file = os.path.join('_problem_instances/exercise_instances/', file)
+        multi_problem = load_multi_period_problem_instance(instance_file)
+        periods = multi_problem.periods
+        base_name, _ = os.path.splitext(file)
+        instance_name = base_name
 
-            customers_id = [k.id for k in problem_instance.customers]
+        uses_vehicle_list = multi_problem.config.vehicle_initial_energies is not None
+        if uses_vehicle_list:
+            base_energy: List[float] = list(multi_problem.config.vehicle_initial_energies)
+        else:
+            base_energy = [multi_problem.config.now_energy]
 
-            convergence_data[file] = {}
+        num_periods = len(periods)
 
-            for meta_name, meta_data in meta_heuristics_params.items():
-                meta_heuristic_class = meta_data['class']
-                params_func = meta_data['params']
+        for meta_name, meta_data in meta_heuristics_params.items():
+            print(f"  -> Applying algorithm {meta_name}")
+            meta_heuristic_class = meta_data['class']
+            params_func = meta_data['params']
 
-                # 为每个文件和算法初始化收敛数据
-                convergence_data[file][meta_name] = {'costs': [], 'times': []}
+            total_costs: List[float] = []
 
-                dist_statistic[file] = []
-                time_statistic[file] = []
-                print(f"Meta-heuristic {meta_name} is used")
-                for i in range(10):  # 进行20次
-                    print(i+1)
-                    params = params_func(problem_instance, solution, cost, file, i)
-                    # 如果参数是元组，直接按顺序解包；否则使用关键字参数解包
+            for run_idx in range(1, 11):
+                print(f"    Run {run_idx}/10")
+                current_energy = list(base_energy)
+                vehicle_count = len(current_energy)
+                run_total_cost = 0.0
+
+                for period_index, period in enumerate(periods):
+                    period_label = period.name or f'Period {period_index + 1}'
+                    if num_periods == 1:
+                        solution_path = '_problem_solutions/solution_{0}'.format(file)
+                    else:
+                        solution_path = '_problem_solutions/solution_{0}_period_{1}.txt'.format(
+                            base_name, period_index + 1
+                        )
+
+                    cost, solution = load_solution(solution_path)
+
+                    initial_energy = current_energy if uses_vehicle_list else current_energy[0]
+                    period_config = multi_problem.config.clone_with_initial_energy(initial_energy)
+                    problem_instance = RoutingProblemInstance(
+                        period_config,
+                        multi_problem.depot,
+                        list(period.customers),
+                        multi_problem.charging_stations,
+                    )
+
+                    convergence_data.setdefault(file, {})
+                    convergence_data[file].setdefault(meta_name, {})
+                    convergence_data[file][meta_name].setdefault(
+                        period_label, {'costs': [], 'times': []}
+                    )
+
+                    params = params_func(problem_instance, solution, cost, file, run_idx - 1)
                     if isinstance(params, tuple):
                         meta_heuristic = meta_heuristic_class(problem_instance, *params)
                     else:
                         meta_heuristic = meta_heuristic_class(problem_instance, **params)
 
+                    start_time = timeit.default_timer()
                     new_cost, new_solution, costs, times = meta_heuristic.improve_solution()
+                    duration = (timeit.default_timer() - start_time)
+                    print(new_solution)
 
-                    if new_solution is not None:
-                        print(f"{meta_name} best solution cost for {file}: {new_cost:.3f}")
-                        # print(new_solution)
-                        energies: List[float] = []
-                        for idx, route in enumerate(new_solution):
-                            remaining_energy = calculate_route_remaining_energy(problem_instance, route, idx)
-                            energies.append(float(remaining_energy))
-                        # print(f"{meta_name} best solution remaining energy: ")
-                        # print(energies)
+                    if new_solution is None:
+                        best_solution = solution
+                        if new_cost is None:
+                            best_cost = cost
+                        else:
+                            best_cost = min(cost, new_cost)
+                    else:
+                        best_solution = new_solution
+                        best_cost = new_cost if new_cost is not None else cost
 
-                    # 记录运行时间
-                    duration = timeit.timeit(functools.partial(meta_heuristic.improve_solution), number=1)
+                    instance_key = f"{file}::{meta_name}::{period_label}"
+                    dist_statistic.setdefault(instance_key, []).append(best_cost)
+                    time_statistic.setdefault(instance_key, []).append(duration)
 
-                    dist_statistic[file].append(new_cost)
-                    time_statistic[file].append(duration)
+                    convergence_data[file][meta_name][period_label]['costs'].append(costs)
+                    convergence_data[file][meta_name][period_label]['times'].append(times)
 
-                    # 保存结果到列表
-                    all_results.append((file, meta_name, i+1, new_cost, duration))
-                    # print(all_results)
-                    convergence_data[file][meta_name]['costs'].append(costs)
-                    convergence_data[file][meta_name]['times'].append(times)
+                    all_results.append(
+                        (file, period_label, meta_name, run_idx, best_cost, duration)
+                    )
+                    all_convergence_runs.append(
+                        {
+                            "File": file,
+                            "Period": period_label,
+                            "Algorithm": meta_name,
+                            "Run": run_idx,
+                            "Final_Cost": best_cost,
+                            "Costs": costs,
+                            "Times": times,
+                        }
+                    )
+                    convergence_records.append(
+                        {
+                            "File": file,
+                            "Period": period_label,
+                            "Algorithm": meta_name,
+                            "Run": run_idx,
+                            "Costs": costs,
+                            "Times": times,
+                        }
+                    )
 
-                    all_convergence_runs.append({
-                        "File": file,
-                        "Algorithm": meta_name,
-                        "Run": i + 1,
-                        "Final_Cost": new_cost,
-                        "Costs": costs,  # 这是一个列表 [c1, c2, ...]
-                        "Times": times  # 这是一个列表 [t1, t2, ...]
-                    })
+                    remaining_energy = []
+                    for idx, route in enumerate(best_solution):
+                        remaining = calculate_route_remaining_energy(problem_instance, route, idx)
+                        remaining_energy.append(float(remaining))
 
-                    convergence_records.append({
-                        "File": file,
-                        "Algorithm": meta_name,
-                        "Run": i + 1,  # 运行次数 i，从1开始
-                        "Costs": costs,
-                        "Times": times
-                    })
+                    current_energy = EVRPTWSolver._normalize_remaining_energy(
+                        remaining_energy,
+                        current_energy,
+                        period_config.tank_capacity,
+                        vehicle_count,
+                    )
+                    vehicle_count = max(vehicle_count, len(current_energy))
 
-                print(f"Meta-heuristic {meta_name} applied 20 times for file {file}")
+                    raw_records.append(
+                        {
+                            'instance_name': instance_name,
+                            'algorithm': meta_name,
+                            'run': run_idx,
+                            'period_index': period_index + 1,
+                            'period_name': period_label,
+                            'best_objective': f"{best_cost:.6f}",
+                            'remaining_energy': _format_remaining_energy(current_energy),
+                        }
+                    )
 
+                    run_total_cost += float(best_cost)
+
+                total_costs.append(run_total_cost)
+                total_cost_records.append(
+                    {
+                        'instance_name': instance_name,
+                        'algorithm': meta_name,
+                        'run': run_idx,
+                        'total_cost': f"{run_total_cost:.6f}",
+                    }
+                )
+
+            average_total = float(np.mean(total_costs)) if total_costs else 0.0
+            std_total = float(np.std(total_costs)) if total_costs else 0.0
+
+            summary_records.append(
+                {
+                    'instance_name': instance_name,
+                    'algorithm': meta_name,
+                    'num_periods': num_periods,
+                    'num_runs': len(total_costs),
+                    'average_total_cost': f"{average_total:.6f}",
+                    'std_total_cost': f"{std_total:.6f}",
+                }
+            )
+            print(
+                f"    -> {meta_name} average total cost: {average_total:.6f}, std: {std_total:.6f}"
+            )
     convergence_df = pd.DataFrame(all_convergence_runs)
     convergence_df.to_csv("all_convergence_runs.csv", index=False)
 
-    # 保存结果到 Excel 文件
-    df = pd.DataFrame(all_results, columns=['File', 'MetaHeuristic', 'Iteration', 'Cost', 'Duration'])
+    df = pd.DataFrame(
+        all_results,
+        columns=['File', 'Period', 'MetaHeuristic', 'Iteration', 'Cost', 'Duration'],
+    )
     df.to_excel('meta_heuristics_results with 1s and 30threshold.xlsx', index=False)
 
     # 保存 convergence_data 的详细记录到 Excel 文件
     convergence_df = pd.DataFrame(convergence_records)
     convergence_df.to_excel("convergence_data.xlsx", index=False)
 
-    write_meta_heuristic_result_statistic_to_file('meta_heuristic_results.csv with 1s and 30threshold', dist_statistic, time_statistic)
+    write_meta_heuristic_result_statistic_to_file(
+        'meta_heuristic_results.csv with 1s and 30threshold', dist_statistic, time_statistic
+    )
+
+    output_folder = os.path.join('_problem_solutions', 'multi_period_reports')
+    os.makedirs(output_folder, exist_ok=True)
+
+    raw_file = os.path.join(output_folder, 'multi_period_raw_results.csv')
+    with open(raw_file, 'w', newline='', encoding='utf-8') as raw_csv:
+        fieldnames = [
+            'instance_name',
+            'algorithm',
+            'run',
+            'period_index',
+            'period_name',
+            'best_objective',
+            'remaining_energy',
+        ]
+        writer = csv.DictWriter(raw_csv, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(raw_records)
+
+    total_file = os.path.join(output_folder, 'multi_period_total_costs.csv')
+    with open(total_file, 'w', newline='', encoding='utf-8') as total_csv:
+        fieldnames = ['instance_name', 'algorithm', 'run', 'total_cost']
+        writer = csv.DictWriter(total_csv, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(total_cost_records)
+
+    summary_file = os.path.join(output_folder, 'multi_period_instance_summary.csv')
+    with open(summary_file, 'w', newline='', encoding='utf-8') as summary_csv:
+        fieldnames = [
+            'instance_name',
+            'algorithm',
+            'num_periods',
+            'num_runs',
+            'average_total_cost',
+            'std_total_cost',
+        ]
+        writer = csv.DictWriter(summary_csv, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(summary_records)
+
     print("done")
 
     # #收敛曲线绘制

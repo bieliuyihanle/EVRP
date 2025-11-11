@@ -1,5 +1,52 @@
-from targets import Customer, CharingStation
+from dataclasses import dataclass
+from typing import List
+
 import numpy as np
+
+from targets import Customer, CharingStation, Target
+
+
+@dataclass
+class PeriodData:
+    """Customer data that belongs to a single planning period."""
+
+    name: str
+    customers: List[Customer]
+
+
+@dataclass
+class MultiPeriodRoutingProblem:
+    """Container with all information required to solve consecutive periods."""
+
+    config: "RoutingProblemConfiguration"
+    depot: Target
+    charging_stations: List[CharingStation]
+    periods: List[PeriodData]
+
+    def is_multi_period(self) -> bool:
+        return len(self.periods) > 1
+
+
+@dataclass
+class PeriodSolution:
+    """Solution information for a single period."""
+
+    name: str
+    cost: float
+    routes: List["Route"]
+    remaining_energy: List[float]
+
+
+@dataclass
+class MultiPeriodSolution:
+    """Aggregated solutions of all consecutive periods."""
+
+    periods: List[PeriodSolution]
+
+    @property
+    def total_cost(self) -> float:
+        return sum(period.cost for period in self.periods)
+
 
 
 class RoutingProblemConfiguration:
@@ -23,7 +70,32 @@ class RoutingProblemConfiguration:
             return self.vehicle_initial_energies[0] if self.vehicle_initial_energies else 0.0
         if vehicle_index < len(self.vehicle_initial_energies):
             return self.vehicle_initial_energies[vehicle_index]
-        return self.vehicle_initial_energies[-1]
+        return 1500
+
+
+    def get_vehicle_count(self) -> int:
+        if self.vehicle_initial_energies is None:
+            return 1
+        return len(self.vehicle_initial_energies)
+
+    def clone_with_initial_energy(self, initial_energy):
+        """Create a copy of the configuration using different initial energies."""
+
+        if isinstance(initial_energy, list):
+            energy_copy = [float(value) for value in initial_energy]
+        elif isinstance(initial_energy, tuple):
+            energy_copy = [float(value) for value in initial_energy]
+        else:
+            energy_copy = float(initial_energy)
+
+        return RoutingProblemConfiguration(
+            self.tank_capacity,
+            energy_copy,
+            self.payload_capacity,
+            self.fuel_consumption_rate,
+            self.charging_rate,
+            self.velocity,
+        )
 
 
 class RoutingProblemInstance:
@@ -533,3 +605,67 @@ class EVRPTWSolver:
         # print(solution)
         # print(type(solution))
         return cost, solution
+
+    @staticmethod
+    def _normalize_remaining_energy(remaining, previous, tank_capacity, desired_count):
+        """Ensure that the remaining energy list has entries for all vehicles."""
+
+        previous = previous or []
+        desired_count = max(desired_count, len(remaining))
+        normalized = []
+
+        for index in range(desired_count):
+            if index < len(remaining):
+                normalized.append(float(remaining[index]))
+            elif index < len(previous):
+                normalized.append(float(previous[index]))
+            else:
+                normalized.append(float(tank_capacity))
+
+        return normalized
+
+    def solve_multi_period(self, multi_period_problem: MultiPeriodRoutingProblem) -> MultiPeriodSolution:
+        """Solve a consecutive multi-period problem instance."""
+
+        period_solutions: List[PeriodSolution] = []
+        uses_vehicle_list = multi_period_problem.config.vehicle_initial_energies is not None
+
+        if uses_vehicle_list:
+            current_energy: List[float] = list(multi_period_problem.config.vehicle_initial_energies)
+        else:
+            current_energy = [multi_period_problem.config.now_energy]
+
+        vehicle_count = len(current_energy)
+
+        for period in multi_period_problem.periods:
+            initial_energy = current_energy if uses_vehicle_list else current_energy[0]
+            period_config = multi_period_problem.config.clone_with_initial_energy(initial_energy)
+            problem_instance = RoutingProblemInstance(
+                period_config,
+                multi_period_problem.depot,
+                list(period.customers),
+                multi_period_problem.charging_stations,
+            )
+
+            cost, routes = self.solve(problem_instance)
+            remaining = list(self.last_remaining_energy)
+            normalized_remaining = self._normalize_remaining_energy(
+                remaining, current_energy, period_config.tank_capacity, vehicle_count
+            )
+
+            period_solutions.append(
+                PeriodSolution(
+                    name=period.name,
+                    cost=cost,
+                    routes=routes,
+                    remaining_energy=list(normalized_remaining),
+                )
+            )
+
+            current_energy = list(normalized_remaining)
+            vehicle_count = max(vehicle_count, len(current_energy))
+
+        if period_solutions:
+            self.last_remaining_energy = list(period_solutions[-1].remaining_energy)
+
+        return MultiPeriodSolution(period_solutions)

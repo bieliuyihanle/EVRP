@@ -1,68 +1,287 @@
-from evrptw_solver import RoutingProblemInstance, RoutingProblemConfiguration, Route
-from targets import Target, CharingStation, Customer
+from dataclasses import dataclass
+from typing import List, Optional, Tuple, Union
+
 import numpy as np
-import matplotlib.pyplot as plt
+
+from evrptw_solver import (
+    MultiPeriodRoutingProblem,
+    PeriodData,
+    RoutingProblemConfiguration,
+    RoutingProblemInstance,
+    Route,
+)
+from targets import Target, CharingStation, Customer
+
+def _parse_target_line(line: str) -> Tuple[str, Target]:
+    tokens = line.split()
+    if len(tokens) < 8:
+        raise ValueError(f"Malformed target line: '{line}'")
+
+    idx = int(tokens[0][1:])
+    x_coord = float(tokens[2])
+    y_coord = float(tokens[3])
+    stock = int(float(tokens[4]))
+    call_time = int(float(tokens[5]))
+    due_date = int(float(tokens[6]))
+    service_time = int(float(tokens[7]))
+
+    if tokens[1] == 'd':
+        return 'depot', Target(tokens[0], idx, x_coord, y_coord, stock, call_time, due_date, service_time)
+    if tokens[1] == 'f':
+        return 'station', CharingStation(tokens[0], idx, x_coord, y_coord, stock, call_time, due_date, service_time)
+    if tokens[1] == 'c':
+        return 'customer', Customer(tokens[0], idx, x_coord, y_coord, stock, call_time, due_date, service_time)
+
+    raise ValueError(f"Unknown target type token '{tokens[1]}' in line: '{line}'")
 
 
-def load_problem_instance(file):
+@dataclass(frozen=True)
+class VehicleConfig:
+    """Vehicle configuration shared by all periods of an instance."""
+
+    tank_capacity: float
+    now_energy: Union[float, List[float]]
+    load_capacity: float
+    fuel_consumption_rate: float
+    charging_rate: float
+    velocity: float
+
+
+@dataclass(frozen=True)
+class ParsedPeriod:
+    """Container for customers that belong to a single period."""
+
+    name: str
+    customers: List[Customer]
+
+
+@dataclass(frozen=True)
+class MultiPeriodInstance:
+    """Representation of an instance that may contain multiple periods."""
+
+    source: str
+    vehicle: VehicleConfig
+    depot: Target
+    fuel_stations: List[CharingStation]
+    periods: List[ParsedPeriod]
+
+
+def _parse_energy_values(raw_value: str) -> Union[float, List[float]]:
+    """Parse the energy configuration value which may contain multiple entries."""
+
+    cleaned = raw_value.replace(';', ',')
+    values = [float(value.strip()) for value in cleaned.split(',') if value.strip()]
+
+    if not values:
+        raise ValueError("No initial energy values provided in instance file.")
+
+    if len(values) == 1:
+        return values[0]
+
+    return values
+
+
+def _read_targets_block(file_obj) -> Tuple[Target, List[Customer], List[CharingStation]]:
+    """Read the first block containing depot, stations and optional base customers."""
+
+    customers: List[Customer] = []
+    fuel_stations: List[CharingStation] = []
+    depot: Optional[Target] = None
+
+    while True:
+        pos = file_obj.tell()
+        line = file_obj.readline()
+        if not line:
+            break
+
+        stripped = line.strip()
+        if not stripped:
+            break
+
+        if stripped.lower().startswith('period'):
+            file_obj.seek(pos)
+            break
+
+        label, target = _parse_target_line(stripped)
+        if label == 'depot':
+            depot = target
+        elif label == 'station':
+            fuel_stations.append(target)
+        elif label == 'customer':
+            customers.append(target)
+
+    if depot is None:
+        raise ValueError("Instance file is missing a depot definition.")
+
+    return depot, customers, fuel_stations
+
+
+def _read_configuration_line(file_obj, description: str) -> str:
+    """Return the raw configuration value for ``description``."""
+
+    while True:
+        line = file_obj.readline()
+        if not line:
+            raise ValueError(f"Unexpected end of file while reading {description}.")
+
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        if '/' not in stripped:
+            raise ValueError(f"Malformed configuration line for {description}: '{stripped}'")
+
+        value = stripped.split('/', 1)[1].strip()
+        # Some instance files keep a trailing slash after the numeric value (e.g. "1500/").
+        # Trim it alongside optional inline comments so downstream float conversions succeed.
+        if '/' in value:
+            value = value.split('/', 1)[0].strip()
+        if '#' in value:
+            value = value.split('#', 1)[0].strip()
+
+        return value
+
+
+def _read_vehicle_configuration(file_obj) -> VehicleConfig:
+    """Parse the configuration section that contains vehicle parameters."""
+
+    tank_capacity = float(_read_configuration_line(file_obj, 'vehicle tank capacity'))
+    now_energy_raw = _read_configuration_line(file_obj, 'vehicle initial energy')
+    now_energy = _parse_energy_values(now_energy_raw)
+    load_capacity = float(_read_configuration_line(file_obj, 'vehicle load capacity'))
+    fuel_consumption_rate = float(_read_configuration_line(file_obj, 'fuel consumption rate'))
+    charging_rate = float(_read_configuration_line(file_obj, 'charging rate'))
+    velocity = float(_read_configuration_line(file_obj, 'vehicle velocity'))
+
+    return VehicleConfig(
+        tank_capacity=tank_capacity,
+        now_energy=now_energy,
+        load_capacity=load_capacity,
+        fuel_consumption_rate=fuel_consumption_rate,
+        charging_rate=charging_rate,
+        velocity=velocity,
+    )
+
+
+def _parse_period_sections(raw_text: str) -> List[Tuple[Optional[str], List[Customer]]]:
+    """Parse additional period blocks from the remaining part of the instance file."""
+
+    if not raw_text:
+        return []
+
+    periods: List[Tuple[Optional[str], List[Customer]]] = []
+    current_customers: List[Customer] = []
+    current_name: Optional[str] = None
+
+    def flush_period() -> None:
+        nonlocal current_customers, current_name
+        if current_customers:
+            periods.append((current_name, list(current_customers)))
+        current_customers = []
+        current_name = None
+
+    for raw_line in raw_text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+
+        normalized = stripped.strip('[]')
+        normalized = normalized.lstrip('#').strip()
+        if normalized.lower().startswith('period'):
+            flush_period()
+            current_name = normalized
+            continue
+
+        label, target = _parse_target_line(stripped)
+        if label != 'customer':
+            raise ValueError(
+                "Only customer (type 'c') entries are allowed inside period-specific blocks."
+            )
+
+        current_customers.append(target)
+
+    flush_period()
+    return periods
+
+
+def _parse_instance(file: str) -> MultiPeriodInstance:
+    """Read ``file`` and return a structured multi-period instance description."""
     with open(file) as f:
         f.readline()  # ignore header
+        depot, base_customers, fuel_stations = _read_targets_block(f)
+        vehicle_config = _read_vehicle_configuration(f)
+        remaining = f.read()
 
-        target_line = f.readline()
+    periods: List[ParsedPeriod] = []
 
-        customers = []
-        fuel_stations = []
-        depot = None
+    if base_customers:
+        periods.append(ParsedPeriod(name='Period 1', customers=list(base_customers)))
 
-        while target_line != '\n':
-            stl = target_line.split()  # splitted target_line
-            idx = int(stl[0][1:])
-            # new_target = [stl[0], idx, float(stl[2]), float(stl[3]), int(float(stl[4])),
-            #                             int(float(stl[5])), int(float(stl[6])), int(float(stl[7]))]
-            # print(new_target[0])
+    parsed_additional_periods = _parse_period_sections(remaining)
+    next_index = len(periods) + 1
+    for maybe_name, customers in parsed_additional_periods:
+        period_name = maybe_name or f'Period {next_index}'
+        periods.append(ParsedPeriod(name=period_name, customers=list(customers)))
+        next_index += 1
 
-            if stl[1] == 'd':
-                depot = Target(stl[0], idx, float(stl[2]), float(stl[3]), int(float(stl[4])), int(float(stl[5])),
-                               int(float(stl[6])),
-                               int(float(stl[7])))
-            elif stl[1] == 'f':
-                new_target = CharingStation(stl[0], idx, float(stl[2]), float(stl[3]), int(float(stl[4])),
-                                            int(float(stl[5])), int(float(stl[6])), int(float(stl[7])))
-                fuel_stations.append(new_target)
-            elif stl[1] == 'c':
-                new_target = Customer(stl[0], idx, float(stl[2]), float(stl[3]), int(float(stl[4])),
-                                      int(float(stl[5])), int(float(stl[6])), int(float(stl[7])))
-                customers.append(new_target)
+    if not periods:
+        periods.append(ParsedPeriod(name='Period 1', customers=[]))
 
-            target_line = f.readline()
+    return MultiPeriodInstance(
+        source=str(file),
+        vehicle=vehicle_config,
+        depot=depot,
+        fuel_stations=fuel_stations,
+        periods=periods,
+    )
 
-        configuration_line = f.readline()
-        tank_capacity = float(configuration_line.split('/')[1])  # q Vehicle fuel tank capacity
 
-        configuration_line = f.readline()
-        energy_section = configuration_line.split('/')[1]
-        energy_tokens = energy_section.replace(',', ' ').split()
-        now_energy_values = [float(token) for token in energy_tokens]
-        if len(now_energy_values) == 1:
-            now_energy = now_energy_values[0]
-        else:
-            now_energy = now_energy_values
+def load_multi_period_instance(file: str) -> MultiPeriodInstance:
+    """Public helper returning the parsed multi-period instance description."""
+    return _parse_instance(file)
 
-        configuration_line = f.readline()
-        load_capacity = float(configuration_line.split('/')[1])  # C Vehicle load capacity
 
-        configuration_line = f.readline()
-        fuel_consumption_rate = float(configuration_line.split('/')[1])  # r fuel consumption rate
+def _build_problem_configuration(vehicle: VehicleConfig) -> RoutingProblemConfiguration:
+    return RoutingProblemConfiguration(
+        vehicle.tank_capacity,
+        vehicle.now_energy,
+        vehicle.load_capacity,
+        vehicle.fuel_consumption_rate,
+        vehicle.charging_rate,
+        vehicle.velocity,
+    )
 
-        configuration_line = f.readline()
-        charging_rate = float(configuration_line.split('/')[1])  # g inverse refueling rate
+def load_problem_instance(file, period_index: int = 0):
+    parsed = _parse_instance(file)
+    if period_index < 0 or period_index >= len(parsed.periods):
+        raise IndexError(
+            f"Requested period_index {period_index} but only {len(parsed.periods)} period(s) available."
+        )
+    config = _build_problem_configuration(parsed.vehicle)
+    selected_customers = parsed.periods[period_index].customers
 
-        configuration_line = f.readline()
-        velocity = float(configuration_line.split('/')[1])  # v average Velocity
+    return RoutingProblemInstance(
+        config,
+        parsed.depot,
+        list(selected_customers),
+        list(parsed.fuel_stations),
+    )
 
-        return RoutingProblemInstance(RoutingProblemConfiguration(tank_capacity, now_energy, load_capacity, fuel_consumption_rate,
-                                                                  charging_rate, velocity), depot, customers,
-                                      fuel_stations)
+def load_multi_period_problem_instance(file):
+    parsed = _parse_instance(file)
+
+    config = _build_problem_configuration(parsed.vehicle)
+    periods = [
+        PeriodData(name=period.name, customers=list(period.customers))
+        for period in parsed.periods
+    ]
+
+    return MultiPeriodRoutingProblem(
+        config,
+        parsed.depot,
+        list(parsed.fuel_stations),
+        periods,
+    )
 
 
 def load_solution(file):

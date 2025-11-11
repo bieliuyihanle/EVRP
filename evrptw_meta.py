@@ -43,7 +43,28 @@ def calculate_route_remaining_energy(problem_instance: RoutingProblemInstance, r
         last_position = target
 
     return current_energy
+def calculate_route_remaining_energy1(problem_instance: RoutingProblemInstance, route, vehicle_index: int) -> float:
+    """Return the remaining energy of a route using the vehicle-specific initial energy."""
 
+    if not route:
+        return problem_instance.config.get_initial_energy(vehicle_index)
+
+    current_energy = problem_instance.config.get_initial_energy(vehicle_index)
+    last_position = problem_instance.depot
+    print(current_energy)
+
+    for vertex_id in route[1:]:
+        target = problem_instance.vertices[vertex_id]
+        distance = last_position.distance_to(target)
+        current_energy -= distance * problem_instance.config.fuel_consumption_rate
+        print(current_energy)
+        # print(current_energy)
+        if isinstance(target, CharingStation):
+            current_energy = problem_instance.config.tank_capacity
+
+        last_position = target
+
+    return current_energy
 
 # neighbourhoods
 def two_opt_star(state, cost, remove_operator, nc_feasible_operator, state_feasibility_operator, route_cost_operator, need_operator,
@@ -1245,12 +1266,16 @@ class Adaptive:
 
         # print("111111111111111111111111111")
         # 初始化未访问的客户列表
+
+
         unvisited_customers = []
 
         for idx, value in enumerate(state.state):
             self._set_vehicle_energy(idx)
             # 判断当前路径是否需要充电
             while self.need_charge(state.state[idx]):
+                # print(state.state[idx])
+                # print(self.problem_instance.config.now_energy)
                 self._set_vehicle_energy(idx)
 
                 k = self.make_route_feasible_and_best(value)
