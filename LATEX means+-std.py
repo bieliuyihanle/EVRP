@@ -1,7 +1,7 @@
 import pandas as pd
 
 # 加载 Excel 文件并读取数据
-file_path = 'T7rounded_output.xlsx'  # 请替换为你的 Excel 文件路径
+file_path = '改1multi_period_instance_summary1-100.xlsx'  # 请替换为你的 Excel 文件路径
 df = pd.read_excel(file_path, sheet_name='Sheet1')
 
 
@@ -32,34 +32,43 @@ df['File'] = df['File'].fillna(method='ffill')
 df['Instance'] = df['File'].apply(lambda x: map_instance_name(x) if 'Instance' in str(x) else None)
 
 # 透视表格以便于数据提取
-pivot_df = df.pivot_table(index='Instance', columns='MetaHeuristic', values=['mean', 'std'], aggfunc='first', dropna=False)
+pivot_df = df.pivot_table(index='Instance', columns='MetaHeuristic', values=['mean', 'std', 'derta'], aggfunc='first', dropna=False)
 
 
 
 # 生成 LaTeX 表格的函数
 def generate_latex_table(pivot_df):
     latex_table = "\\begin{table}[ht]\n\\centering\n\\begin{tabular}{|l|l|l|l|l|}\n\\hline\n"
-    latex_table += "Instance & FCFS (mean) & SA (mean ± std) & VNS (mean ± std) & ALNS (mean ± std) \\\\ \\hline\n"
+    latex_table += "Instance & FCFS (mean) & SA (mean ± std) & VNS (mean ± std) & ALNS (mean ± std) & DRL-ALNS (mean ± std) \\\\ \\hline\n"
 
     for instance in pivot_df.index:
         alns_mean = pivot_df.loc[instance, ('mean', 'Adaptive')] if ('mean', 'Adaptive') in pivot_df.columns else '-'
         alns_std = pivot_df.loc[instance, ('std', 'Adaptive')] if ('std', 'Adaptive') in pivot_df.columns else '-'
+        alns_derta = pivot_df.loc[instance, ('derta', 'Adaptive')] if ('derta', 'Adaptive') in pivot_df.columns else '-'
 
         fcfs_mean = pivot_df.loc[instance, ('mean', 'FCFS')] if ('mean', 'FCFS') in pivot_df.columns else '-'
+        fcfs_derta = pivot_df.loc[instance, ('derta', 'FCFS')] if ('derta', 'FCFS') in pivot_df.columns else '-'
 
         sa_mean = pivot_df.loc[instance, ('mean', 'SimulatedAnnealing1')] if ('mean',
                                                                               'SimulatedAnnealing1') in pivot_df.columns else '-'
         sa_std = pivot_df.loc[instance, ('std', 'SimulatedAnnealing1')] if ('std',
                                                                             'SimulatedAnnealing1') in pivot_df.columns else '-'
+        sa_derta = pivot_df.loc[instance, ('derta', 'SimulatedAnnealing1')] if ('derta', 'SimulatedAnnealing1') in pivot_df.columns else '-'
+
 
         vns_mean = pivot_df.loc[instance, ('mean', 'VariableNeighbourhoodSearch')] if ('mean',
                                                                                        'VariableNeighbourhoodSearch') in pivot_df.columns else '-'
         vns_std = pivot_df.loc[instance, ('std', 'VariableNeighbourhoodSearch')] if ('std',
                                                                                      'VariableNeighbourhoodSearch') in pivot_df.columns else '-'
+        vns_derta = pivot_df.loc[instance, ('derta', 'VariableNeighbourhoodSearch')] if ('derta', 'VariableNeighbourhoodSearch') in pivot_df.columns else '-'
 
 
+        drl_mean = pivot_df.loc[instance, ('mean', 'DRL-ALNS')] if ('mean', 'DRL-ALNS') in pivot_df.columns else '-'
+        drl_std = pivot_df.loc[instance, ('std', 'DRL-ALNS')] if ('std', 'DRL-ALNS') in pivot_df.columns else '-'
 
-        latex_table += f"{instance} & {fcfs_mean} & {sa_mean} $\pm$ {sa_std} & {vns_mean} $\pm$ {vns_std} & {alns_mean} $\pm$ {alns_std} \n"
+
+        latex_table += f"{instance} & {fcfs_mean} & {sa_mean} $\pm$ {sa_std} & {vns_mean} $\pm$ {vns_std} & {alns_mean} $\pm$ {alns_std} & \\textbf{{{drl_mean:.1f}}} $\pm$ \\textbf{{{drl_std:.1f}}} & {fcfs_derta} & {sa_derta} & {vns_derta} & {alns_derta}\\\\ \n"
+
 
     latex_table += "\\end{tabular}\n\\caption{Comparison of Algorithm Performances}\n\\end{table}"
 

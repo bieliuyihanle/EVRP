@@ -1,13 +1,13 @@
 import pandas as pd
 
 # 读取 Excel 文件
-file_path = r'C:\Users\10133\Desktop\evrp\改\meta_heuristics_results with CT25.xlsx'  # 替换为你的文件路径
+file_path = r'C:\Users\10133\Desktop\evrp\改1\改1multi_period_instance_summary1-100.xlsx'  # 替换为你的文件路径
 df = pd.read_excel(file_path)
 
 # 定义要比较的元启发式方法和 ALNS 方法
 # methods_to_compare = ['SimulatedAnnealing1', 'FCFS', 'VariableNeighbourhoodSearch']
-methods_to_compare = ['SimulatedAnnealing1', 'VariableNeighbourhoodSearch']
-alns_method = 'Adaptive'
+methods_to_compare = ['FCFS','SimulatedAnnealing1', 'VariableNeighbourhoodSearch', 'Adaptive']
+alns_method = 'DRL-ALNS'
 
 # 创建一个新的 DataFrame 存储每个实例文件的 \(\Delta_{Obj}\) 值
 delta_obj_df = pd.DataFrame(columns=['File', 'Method', 'Delta_Obj (%)'])
@@ -34,4 +34,4 @@ for file in df['File'].unique():
 print(delta_obj_df)
 
 # 保存结果到 Excel 文件
-delta_obj_df.to_excel('1s结果.xlsx', index=False)
+delta_obj_df.to_excel('1-100.xlsx', index=False)

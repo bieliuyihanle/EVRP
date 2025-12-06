@@ -61,19 +61,19 @@ def main():
         #         solution, cost, 400, 0.9, '{0}_{1}'.format(file, i)
         #     )
         # },
-        # 'VariableNeighbourhoodSearch': {
-        #     'class': VariableNeighbourhoodSearch,
-        #     'params': lambda problem_instance, solution, cost, file, i: {
-        #         'solution': solution,
-        #         'cost': cost
-        #     }
-        # },
-        'Adaptive': {
-            'class': Adaptive,
-            'params': lambda problem_instance, solution, cost, file, i: (
-                solution, cost, '{0}_{1}'.format(file, i)
-            )
-        }
+        'VariableNeighbourhoodSearch': {
+            'class': VariableNeighbourhoodSearch,
+            'params': lambda problem_instance, solution, cost, file, i: {
+                'solution': solution,
+                'cost': cost
+            }
+        },
+        # 'Adaptive': {
+        #     'class': Adaptive,
+        #     'params': lambda problem_instance, solution, cost, file, i: (
+        #         solution, cost, '{0}_{1}'.format(file, i)
+        #     )
+        # }
     }
 
     print("The best score of {0} was achieved with {1} and parameter {2}".format(best_score, best_heuristic,
@@ -213,7 +213,7 @@ def main():
                     start_time = timeit.default_timer()
                     new_cost, new_solution, costs, times = meta_heuristic.improve_solution()
                     duration = (timeit.default_timer() - start_time)
-                    print(new_solution)
+
 
                     if new_solution is None:
                         best_solution = solution

@@ -12,6 +12,44 @@ from evrptw_solver import (
 )
 from targets import Target, CharingStation, Customer
 
+
+def read_instance_period_data(file: str):
+    """Return the depot, charging stations and per-period customer lists.
+
+    Parameters
+    ----------
+    file:
+        Path to the instance file that should be parsed.
+
+    Returns
+    -------
+    dict
+        Dictionary containing the depot (``depot``), the list of charging
+        stations (``charging_stations``), all unique customers appearing in the
+        instance (``customers``) and a list that groups the customers for each
+        period (``period_customers``).
+    """
+
+    parsed_instance = load_multi_period_instance(file)
+
+    unique_customers = []
+    seen_ids = set()
+    for period in parsed_instance.periods:
+        for customer in period.customers:
+            if customer.id not in seen_ids:
+                unique_customers.append(customer)
+                seen_ids.add(customer.id)
+
+    period_customers = [list(period.customers) for period in parsed_instance.periods]
+
+    return {
+        "depot": parsed_instance.depot,
+        "charging_stations": list(parsed_instance.fuel_stations),
+        "customers": unique_customers,
+        "period_customers": period_customers,
+    }
+
+
 def _parse_target_line(line: str) -> Tuple[str, Target]:
     tokens = line.split()
     if len(tokens) < 8:

@@ -1389,7 +1389,7 @@ class Adaptive:
                 route.append(successor.id)
                 # demand = route.calculate_demand()
                 if not self.is_nc_feasible(route):
-                    route.remove_target(successor)
+                    route.remove(successor.id)
                     break
                 serviced_customers.add(successor)
                 last_position = successor
@@ -1657,7 +1657,7 @@ class Adaptive:
             if type(target) is Customer:
                 time_cost += target.due_date-arrival_times[i-1]
             # print(f"time{time_cost}")
-        route_cost = dist_cost + 0.1 * time_cost
+        route_cost = dist_cost + 0.5 * time_cost
         # print(route_cost)
         return route_cost
 
@@ -1678,7 +1678,7 @@ class Adaptive:
                 if type(target) is Customer:
                     time_cost += target.due_date-arrival_times[i-1]
                 # print(time_cost)
-            route_cost = dist_cost + 0.1 * time_cost + 1000
+            route_cost = dist_cost + 0.5 * time_cost + 800
 
         return route_cost
 
@@ -2260,7 +2260,7 @@ class FCFS:
             if type(target) is Customer:
                 time_cost += target.due_date-arrival_times[i-1]
             # print(f"time{time_cost}")
-        route_cost = dist_cost + 0.1 * time_cost
+        route_cost = dist_cost + 0.5 * time_cost
         # print(route_cost)
         return route_cost
 
@@ -2281,7 +2281,7 @@ class FCFS:
                 if type(target) is Customer:
                     time_cost += target.due_date-arrival_times[i-1]
                 # print(time_cost)
-            route_cost = dist_cost + 0.1 * time_cost + 1000
+            route_cost = dist_cost + 0.5 * time_cost + 800
 
         return route_cost
 
@@ -2679,6 +2679,8 @@ class SimulatedAnnealing1:
                 else:
                     # 找不到插入点，移除最小到达时间的客户点
                     earliest_customer = self.find_earliest_customer(state[idx])
+                    print(earliest_customer)
+                    print(state[idx])
                     state[idx].remove(earliest_customer)    # 从当前路径中移除
                     unvisited_customers.append(self.problem_instance.vertices[earliest_customer])  # 将该客户点标记为未访问
                     # 路径调整后，继续判断是否需要充电
@@ -3045,7 +3047,7 @@ class SimulatedAnnealing1:
             if type(target) is Customer:
                 time_cost += target.due_date-arrival_times[i-1]
             # print(f"time{time_cost}")
-        route_cost = dist_cost + 0.1 * time_cost
+        route_cost = dist_cost + 0.5 * time_cost
         # print(route_cost)
         return route_cost
 
@@ -3066,7 +3068,7 @@ class SimulatedAnnealing1:
                 if type(target) is Customer:
                     time_cost += target.due_date-arrival_times[i-1]
                 # print(time_cost)
-            route_cost = dist_cost + 0.1 * time_cost + 1000
+            route_cost = dist_cost + 0.5 * time_cost + 800
 
         return route_cost
 
@@ -3209,7 +3211,6 @@ class VariableNeighbourhoodSearch:
     def improve_solution(self):
         best_cost = self.cost
         best_solution = deepcopy(self.solution)
-
         result_cache = LifoQueue()  # 保存最近的5个结果
 
         route_cost_cache = 0
@@ -3223,12 +3224,15 @@ class VariableNeighbourhoodSearch:
 
         start_time = time.time()  # 记录开始时间
 
-        while time.time() - start_time < 1:  # 限制运行时间不超过10秒
+        n = 1
+        while time.time() - start_time < 5:  # 限制运行时间不超过10秒
             k = 0
+            n += 1
+
             while k <= K_MAX:
 
                 # 在内部循环中也检查时间
-                if time.time() - start_time >= 1:
+                if time.time() - start_time >= 5:
                     break
 
                 next_rand_sol, next_route_cost_cache = self.get_next_random_feasible_solution(k, best_solution,
@@ -3257,7 +3261,7 @@ class VariableNeighbourhoodSearch:
                     prev_cost = result_cache.get()
                     if prev_cost == best_cost:
                         # 如果没有改进，检查时间是否达标
-                        if time.time() - start_time < 1:
+                        if time.time() - start_time < 5:
                             # 如果未达到10秒，则重置k并继续
                             k = 0
                         else:
@@ -4260,7 +4264,7 @@ class VariableNeighbourhoodSearch:
             if type(target) is Customer:
                 time_cost += target.due_date-arrival_times[i-1]
             # print(f"time{time_cost}")
-        route_cost = dist_cost + 0.1 * time_cost
+        route_cost = dist_cost + 0.5 * time_cost
         # print(route_cost)
         return route_cost
 
@@ -4281,7 +4285,7 @@ class VariableNeighbourhoodSearch:
                 if type(target) is Customer:
                     time_cost += target.due_date-arrival_times[i-1]
                 # print(time_cost)
-            route_cost = dist_cost + 0.1 * time_cost + 1000
+            route_cost = dist_cost + 0.5 * time_cost + 800
 
         return route_cost
 

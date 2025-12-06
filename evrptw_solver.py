@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 
 import numpy as np
 
@@ -278,7 +278,7 @@ class Route:
                 time_cost += 0
             if type(self.route[i]) is Customer:
                 time_cost += self.route[i].due_date-arrival_times[i-1]
-        total_cost = dist_cost + time_cost + 1000
+        total_cost = dist_cost + 0.1 * time_cost + 1000
 
         return total_cost
 
@@ -669,3 +669,251 @@ class EVRPTWSolver:
             self.last_remaining_energy = list(period_solutions[-1].remaining_energy)
 
         return MultiPeriodSolution(period_solutions)
+
+def evaluate_period_solution(
+    problem_instance: RoutingProblemInstance,
+    solution_routes: Sequence[Union[Route, Sequence[Union[Target, str]]]],
+    initial_energies: Union[float, Sequence[float], None] = None,
+    period_name: str = "manual",
+) -> PeriodSolution:
+    """Calculate the cost of a manually provided solution for a single period.
+
+    Parameters
+    ----------
+    problem_instance:
+        ``RoutingProblemInstance`` that describes the considered period.
+    solution_routes:
+        Sequence containing either :class:`Route` objects or iterables with the
+        identifiers of the visited vertices. When identifiers are provided the
+        function resolves them using ``problem_instance.vertices``.
+    initial_energies:
+        Optional override of the vehicles' initial energies. A single value is
+        broadcast to all routes while a sequence must provide at least as many
+        entries as routes in ``solution_routes``. When omitted the energies from
+        ``problem_instance.config`` are used.
+    period_name:
+        Optional label used for the returned :class:`PeriodSolution`.
+
+    Returns
+    -------
+    PeriodSolution
+        Object containing the evaluated routes, their total cost and the
+        remaining energy after completing each route.
+    """
+
+    if not isinstance(solution_routes, Sequence) or isinstance(solution_routes, (str, bytes)):
+        raise TypeError("solution_routes must be a sequence of routes.")
+
+    route_count = len(solution_routes)
+    if route_count == 0:
+        raise ValueError("At least one route must be provided for evaluation.")
+
+    if initial_energies is None:
+        if problem_instance.config.vehicle_initial_energies is not None:
+            energy_values: List[float] = list(problem_instance.config.vehicle_initial_energies)
+        else:
+            energy_values = [float(problem_instance.config.now_energy)]
+    elif isinstance(initial_energies, (int, float)):
+        energy_values = [float(initial_energies)]
+    else:
+        energy_values = [float(value) for value in initial_energies]
+
+    if len(energy_values) == 1 and route_count > 1:
+        energy_values = energy_values * route_count
+    elif len(energy_values) < route_count:
+        raise ValueError(
+            "initial_energies must provide at least as many entries as routes in solution_routes."
+        )
+
+    def _make_route(
+        raw_route: Union[Route, Sequence[Union[Target, str]]],
+        vehicle_index: int,
+        initial_energy: float,
+    ) -> Route:
+        if isinstance(raw_route, Route):
+            route_instance = Route(
+                problem_instance.config,
+                problem_instance.depot,
+                vehicle_index=vehicle_index,
+                initial_energy=initial_energy,
+            )
+            route_instance.route = list(raw_route.route)
+            return route_instance
+
+        if isinstance(raw_route, (str, bytes)) or not isinstance(raw_route, Iterable):
+            raise TypeError(
+                "Each entry in solution_routes must be a Route or an iterable of targets/identifiers."
+            )
+
+        resolved_nodes: List[Target] = []
+        for node in raw_route:
+            if isinstance(node, Target):
+                resolved_nodes.append(node)
+            else:
+                node_id = str(node)
+                if node_id not in problem_instance.vertices:
+                    raise KeyError(f"Unknown target identifier '{node_id}' in route definition.")
+                resolved_nodes.append(problem_instance.vertices[node_id])
+
+        if not resolved_nodes:
+            raise ValueError("Route definitions must not be empty.")
+
+        if resolved_nodes[0] is not problem_instance.depot:
+            resolved_nodes.insert(0, problem_instance.depot)
+        if resolved_nodes[-1] is not problem_instance.depot:
+            resolved_nodes.append(problem_instance.depot)
+
+        route_instance = Route(
+            problem_instance.config,
+            problem_instance.depot,
+            vehicle_index=vehicle_index,
+            initial_energy=initial_energy,
+        )
+        route_instance.route = resolved_nodes
+        return route_instance
+
+    evaluated_routes: List[Route] = []
+    remaining_energy: List[float] = []
+    total_cost = 0.0
+
+    for index, raw_route in enumerate(solution_routes):
+        route_energy = energy_values[index]
+        route = _make_route(raw_route, index, route_energy)
+        total_cost += route.calculate_total_cost()
+        remaining_energy.append(float(route.calculate_remaining_energy()))
+        evaluated_routes.append(route)
+
+    return PeriodSolution(
+        name=period_name,
+        cost=total_cost,
+        routes=evaluated_routes,
+        remaining_energy=remaining_energy,
+    )
+
+
+def _coerce_target(
+    raw_target: Union[Target, Dict[str, Any]],
+    target_cls: type,
+    fallback_idx: int,
+) -> Target:
+    """Convert a dictionary or existing object into a :class:`Target` subclass."""
+
+    if isinstance(raw_target, target_cls):
+        return raw_target
+
+    if isinstance(raw_target, Target):
+        if target_cls is Target or isinstance(raw_target, target_cls):
+            return raw_target
+        raise TypeError(
+            "Provided target instance does not match the expected target type."
+        )
+
+    if not isinstance(raw_target, dict):
+        raise TypeError(
+            "Targets must be provided either as dictionaries or existing Target instances."
+        )
+
+    target_id = str(raw_target.get("id", fallback_idx))
+    idx_value = int(raw_target.get("idx", fallback_idx))
+    x = float(raw_target.get("x", 0.0))
+    y = float(raw_target.get("y", 0.0))
+    stock = float(raw_target.get("stock_at_call_time", 0.0))
+    call_time = float(raw_target.get("call_time", 0.0))
+    due_date = float(raw_target.get("due_date", 0.0))
+    service_time = float(raw_target.get("service_time", 0.0))
+
+    return target_cls(target_id, idx_value, x, y, stock, call_time, due_date, service_time)
+
+
+def evaluate_manual_solution(
+    depot: Union[Target, Dict[str, Any]],
+    customers: Sequence[Union[Customer, Dict[str, Any]]],
+    charging_stations: Sequence[Union[CharingStation, Dict[str, Any]]],
+    solution_routes: Sequence[Sequence[Union[Target, str]]],
+    tank_capacity: float,
+    initial_energies: Union[float, Sequence[float]],
+    fuel_consumption_rate: float,
+    velocity: float,
+    payload_capacity: Optional[float] = None,
+    charging_rate: float = 0.0,
+    period_name: str = "manual",
+) -> PeriodSolution:
+    """Evaluate a manually specified solution without building solver objects.
+
+    Parameters
+    ----------
+    depot, customers, charging_stations:
+        Points of the problem. Each entry can either be an existing ``Target``
+        instance (``Target``, ``Customer`` or ``CharingStation``) or a
+        dictionary with the fields ``id``, ``idx``, ``x``, ``y``,
+        ``stock_at_call_time``, ``call_time``, ``due_date`` and ``service_time``.
+        Missing dictionary fields default to ``0`` and ``id``/``idx`` fall back
+        to the insertion order.
+    solution_routes:
+        Sequence describing the planned vehicle tours. Each route is a sequence
+        containing either target identifiers (strings/integers) or direct target
+        objects. Depot visits are added automatically when missing.
+    tank_capacity:
+        Maximum energy capacity of each vehicle.
+    initial_energies:
+        Initial energy for the vehicles. Provide a single numeric value to reuse
+        it for all routes or a sequence with an explicit value per route.
+    fuel_consumption_rate:
+        Energy consumed per unit of travelled distance.
+    velocity:
+        Vehicle speed used to transform distances into travel times.
+    payload_capacity:
+        Optional payload capacity. When omitted an effectively unlimited
+        capacity is used.
+    charging_rate:
+        Time required to recharge one unit of energy at a charging station.
+    period_name:
+        Name of the evaluated period for reporting purposes.
+
+    Returns
+    -------
+    PeriodSolution
+        Object containing the evaluated routes, their total cost and the
+        remaining energy after each route.
+    """
+
+    depot_target = _coerce_target(depot, Target, 0)
+
+    customer_targets = [
+        _coerce_target(customer, Customer, index + 1)
+        for index, customer in enumerate(customers)
+    ]
+
+    station_targets = [
+        _coerce_target(station, CharingStation, index + 1)
+        for index, station in enumerate(charging_stations)
+    ]
+
+    effective_payload_capacity = (
+        float(payload_capacity)
+        if payload_capacity is not None
+        else float("inf")
+    )
+
+    config = RoutingProblemConfiguration(
+        tank_capacity=tank_capacity,
+        now_energy=initial_energies,
+        payload_capacity=effective_payload_capacity,
+        fuel_consumption_rate=fuel_consumption_rate,
+        charging_rate=charging_rate,
+        velocity=velocity,
+    )
+
+    problem_instance = RoutingProblemInstance(
+        config=config,
+        depot=depot_target,
+        customers=[depot_target] + customer_targets,
+        charging_stations=station_targets + [depot_target],
+    )
+
+    return evaluate_period_solution(
+        problem_instance=problem_instance,
+        solution_routes=solution_routes,
+        initial_energies=initial_energies,
+        period_name=period_name,
+    )

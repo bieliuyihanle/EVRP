@@ -96,7 +96,7 @@ def compute_mean_stats(data, scale_start, scale_end):
 
 
 # 读取Excel文件
-file_path = '保存algorithm_results.xlsx'  # 替换为你的文件路径
+file_path = '改1multi_period_instance_summary.xlsx'  # 替换为你的文件路径
 data = pd.read_excel(file_path)
 data['File'] = data['File'].fillna(method='ffill')
 
