@@ -3224,15 +3224,13 @@ class VariableNeighbourhoodSearch:
 
         start_time = time.time()  # 记录开始时间
 
-        n = 1
-        while time.time() - start_time < 5:  # 限制运行时间不超过10秒
+        while time.time() - start_time < 1:  # 限制运行时间不超过10秒
             k = 0
-            n += 1
 
             while k <= K_MAX:
 
                 # 在内部循环中也检查时间
-                if time.time() - start_time >= 5:
+                if time.time() - start_time >= 1:
                     break
 
                 next_rand_sol, next_route_cost_cache = self.get_next_random_feasible_solution(k, best_solution,
@@ -3261,7 +3259,7 @@ class VariableNeighbourhoodSearch:
                     prev_cost = result_cache.get()
                     if prev_cost == best_cost:
                         # 如果没有改进，检查时间是否达标
-                        if time.time() - start_time < 5:
+                        if time.time() - start_time < 1:
                             # 如果未达到10秒，则重置k并继续
                             k = 0
                         else:
